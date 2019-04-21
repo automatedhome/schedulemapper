@@ -12,17 +12,15 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
+type Day struct {
+	From        string  `json:"from"`
+	To          string  `json:"to"`
+	Temperature float64 `json:"temperature"`
+}
+
 type Schedule struct {
-	Workday []struct {
-		From        string  `json:"from"`
-		To          string  `json:"to"`
-		Temperature float64 `json:"temperature"`
-	} `json:"workday"`
-	Freeday []struct {
-		From        string  `json:"from"`
-		To          string  `json:"to"`
-		Temperature float64 `json:"temperature"`
-	} `json:"freeday"`
+	Workday            []Day   `json:"workday"`
+	Freeday            []Day   `json:"freeday"`
 	DefaultTemperature float64 `json:"defaultTemperature"`
 }
 
@@ -55,12 +53,24 @@ var expected float64
 var schedule Schedule
 var client mqtt.Client
 
+func (s *Schedule) addWorkday(item Day) []Day {
+	s.Workday = append(s.Workday, item)
+	return s.Workday
+}
+
+func (s *Schedule) addFreeday(item Day) []Day {
+	s.Freeday = append(s.Freeday, item)
+	return s.Freeday
+}
+
 func onMessage(client mqtt.Client, message mqtt.Message) {
 	// unmarshal message into old schedule typr
 	old := OldSchedule{}
-	err := json.Unmarshal(message.Payload(), &old)
+	payload := message.Payload()[1:]
+	payload = payload[0 : len(payload)-1]
+	err := json.Unmarshal(payload, &old)
 	if err != nil {
-		log.Println(err)
+		log.Printf("Cannot unmarshal old schedule: %v\n", err)
 		return
 	}
 	// convert schedule
@@ -69,13 +79,12 @@ func onMessage(client mqtt.Client, message mqtt.Message) {
 	// marshal schedule into string
 	s, err := json.Marshal(new)
 	if err != nil {
-		log.Println(err)
+		log.Printf("Cannot marshal schedule into string: %v\n", err)
 		return
 	}
 
 	// send new schedule
-	log.Panicln(s)
-	//client.Publish(scheduleTopic, 0, true, s)
+	client.Publish(scheduleTopic, 0, true, s)
 
 	// set expected temperature (for manual override)
 	setExpected(old.Override.Temp)
@@ -85,15 +94,18 @@ func onMessage(client mqtt.Client, message mqtt.Message) {
 func convert(old OldSchedule) Schedule {
 	s := Schedule{}
 	s.DefaultTemperature = old.Other
-	for i, entry := range old.Free {
-		s.Freeday[i].From = parseHour(entry.From)
-		s.Freeday[i].To = parseHour(entry.To)
-		s.Freeday[i].Temperature = 0
+	new := Day{}
+	for _, entry := range old.Free {
+		new.From = parseHour(entry.From)
+		new.To = parseHour(entry.To)
+		new.Temperature = entry.Temp
+		s.addFreeday(new)
 	}
-	for i, entry := range old.Work {
-		s.Workday[i].From = parseHour(entry.From)
-		s.Workday[i].To = parseHour(entry.To)
-		s.Workday[i].Temperature = 0
+	for _, entry := range old.Work {
+		new.From = parseHour(entry.From)
+		new.To = parseHour(entry.To)
+		new.Temperature = entry.Temp
+		s.addWorkday(new)
 	}
 
 	log.Printf("Parsed schedule: %+v", s)
